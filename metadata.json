@@ -1,0 +1,7 @@
+{
+  "name": "Doctors availability checker",
+  "description": "A conversational voice booking assistant for doctor appointments using Gemini API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
