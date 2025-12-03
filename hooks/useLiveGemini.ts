@@ -54,15 +54,16 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
   };
 
   const disconnect = useCallback((reason?: string) => {
-    // If we are already fully disconnected, do nothing.
-    // But if we are connecting, we might need to cleanup.
-    if (!isConnectedRef.current && !isConnectingRef.current && status === 'disconnected') return;
-
+    // Immediate state update to prevent race conditions in callbacks
+    const wasConnected = isConnectedRef.current;
     isConnectedRef.current = false;
     isConnectingRef.current = false;
     
-    setStatus('disconnected');
-    setVolume(0);
+    // Only update state if we were actually connected or connecting
+    if (status !== 'disconnected') {
+        setStatus('disconnected');
+        setVolume(0);
+    }
     
     // Stop Recorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -119,7 +120,7 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
     });
     scheduledSourcesRef.current.clear();
 
-    if (reason) {
+    if (reason && wasConnected) {
         const endMsg: Message = {
           id: 'sys-end-' + Date.now(),
           role: 'model',
@@ -138,11 +139,11 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
 
     // Gain Node to boost mic volume significantly for VAD
     const gainNode = inCtx.createGain();
-    gainNode.gain.value = 3.0; 
+    gainNode.gain.value = 1.5; 
     inputGainRef.current = gainNode;
     
-    // Use 2048 for lower latency (approx 128ms)
-    const processor = inCtx.createScriptProcessor(2048, 1, 1);
+    // Use 4096 for better stability
+    const processor = inCtx.createScriptProcessor(4096, 1, 1);
     processorRef.current = processor;
 
     processor.onaudioprocess = (e) => {
@@ -151,6 +152,7 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
           inCtx.resume().catch(() => {});
       }
 
+      // Strict check to ensure we don't send to a closed session
       if (!isConnectedRef.current || !activeSessionRef.current) return;
 
       const inputData = e.inputBuffer.getChannelData(0);
@@ -173,7 +175,8 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
             }
         });
       } catch (err) {
-        // Silent catch to prevent console spam on disconnect
+        // Silent catch. If the socket is closing or network blips, 
+        // we don't want to crash the audio thread or spam console.
       }
     };
 
@@ -309,6 +312,26 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
             // Ignore errors if we are already disconnecting
             if (!isConnectedRef.current) return;
             
+            // Robust Error Serialization
+            let errMsg = '';
+            if (err instanceof Error) errMsg = err.message;
+            else if (typeof err === 'object' && err !== null) {
+                try { errMsg = JSON.stringify(err); } catch { errMsg = String(err); }
+            } else {
+                errMsg = String(err);
+            }
+            
+            // Suppress generic network errors which can happen on disconnect/instability
+            if (
+                errMsg.toLowerCase().includes("network") || 
+                errMsg.toLowerCase().includes("aborted") ||
+                errMsg.toLowerCase().includes("connection")
+            ) {
+                console.warn("Network/Connection error ignored:", errMsg);
+                disconnect("Connection lost.");
+                return;
+            }
+
             console.error("Session Error:", err);
             disconnect("Connection error occurred.");
           }
@@ -334,7 +357,7 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
     }
   }, [onRecordingReady, disconnect]);
 
-  const updateMessageStream = (text: string, role: 'user' | 'model') => {
+  const updateMessageStream = (text: string, role: 'user' | 'model', isInterrupted: boolean = false) => {
     const nonLatinRegex = /[\u0900-\u0E7F]/; 
     if (!text || !text.trim()) return;
     if (role === 'user' && nonLatinRegex.test(text)) return;
@@ -345,13 +368,16 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
       
       if (lastMsg && lastMsg.role === role && lastMsg.isStreaming) {
         lastMsg.text += text;
+        if (isInterrupted && !lastMsg.text.includes("[Interrupted]")) {
+             lastMsg.text += " [Interrupted]";
+        }
         return newMessages;
       } else {
         if (lastMsg && lastMsg.isStreaming) lastMsg.isStreaming = false;
         return [...newMessages, {
           id: Date.now().toString(),
           role: role,
-          text: text,
+          text: text + (isInterrupted ? " [Interrupted]" : ""),
           timestamp: new Date(),
           isStreaming: true
         }];
@@ -376,7 +402,7 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
         
         disconnect("Updating context...");
         // Wait 1s for cleanup before reconnecting to prevent socket race conditions
-        setTimeout(() => connect(text), 1000);
+        setTimeout(() => connect(text), 1200);
     } else {
         connect(text);
     }
@@ -399,10 +425,21 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
       scheduledSourcesRef.current.forEach(src => { try { src.stop(); } catch(e) {} });
       scheduledSourcesRef.current.clear();
       if (outputContextRef.current) nextStartTimeRef.current = outputContextRef.current.currentTime;
+      
+      setMessagesSafe(prev => {
+          const newMessages = [...prev];
+          const lastMsg = newMessages[newMessages.length - 1];
+          if (lastMsg && lastMsg.role === 'model' && lastMsg.isStreaming) {
+             lastMsg.text += " [Interrupted]";
+             lastMsg.isStreaming = false;
+          }
+          return newMessages;
+      });
       return;
     }
 
-    if (content.modelTurn) {
+    // 1. Prioritize TEXT parts from the model (search results, structured data)
+    if (content.modelTurn?.parts) {
         for (const part of content.modelTurn.parts) {
             if (part.text) {
                 updateMessageStream(part.text, 'model');
@@ -410,13 +447,16 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
         }
     }
     
+    // 2. Handle Audio Transcriptions (fallback or user input)
     if (content.inputTranscription?.text) {
       updateMessageStream(content.inputTranscription.text, 'user');
     }
-    if (content.outputTranscription?.text) {
+    // Only use output transcription if modelTurn text was empty (avoid duplicates)
+    if (content.outputTranscription?.text && !content.modelTurn?.parts?.some(p => p.text)) {
       updateMessageStream(content.outputTranscription.text, 'model');
     }
 
+    // 3. Handle Audio Output
     if (content.modelTurn?.parts) {
         for (const part of content.modelTurn.parts) {
             if (part.inlineData && part.inlineData.data) {
