@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Message, LiveStatus } from '../types';
-import { Phone, PhoneOff, Activity, Send, Link as LinkIcon, MessageSquare, MapPin, ExternalLink, Star, Clock, Banknote, User } from 'lucide-react';
+import { AudioLines, X, Send, MessageSquare, MapPin, ExternalLink, Star, Banknote, User, Clock, Mic, StopCircle, Loader2 } from 'lucide-react';
 
 interface ChatInterfaceProps {
   messages: Message[];
@@ -133,9 +133,6 @@ const SectionContent = ({ text, processInline }: { text: string, processInline: 
                 else if (trimmed.includes('Availability:') || trimmed.includes('🕒')) icon = <Clock size={14} className="mt-1 text-orange-500 shrink-0" />;
                 else if (trimmed.includes('Rating:') || trimmed.includes('⭐')) icon = <Star size={14} className="mt-1 text-yellow-500 shrink-0" />;
                 
-                // Remove the emojis if we are replacing them with Lucide icons (optional, but cleaner)
-                // We keep the logic simple: just render the line with processInline
-                
                 if (trimmed.startsWith('* ') || trimmed.startsWith('- ') || trimmed.startsWith('• ')) {
                     return (
                         <div key={i} className={className + " ml-2"}>
@@ -183,6 +180,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [inputText, setInputText] = useState("");
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -201,11 +200,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') handleSend();
-  };
-
-  const handlePhoneClick = () => {
+  const toggleLiveCall = () => {
     if (liveStatus === 'connected') {
       onDisconnect();
     } else {
@@ -213,10 +208,46 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
+  // Voice Note / Dictation Logic
+  const toggleDictation = () => {
+    if (isListening) {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Voice input is not supported in this browser.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setInputText(prev => prev + (prev ? " " : "") + transcript);
+    };
+    recognition.onerror = (event: any) => {
+      console.error("Speech recognition error", event.error);
+      setIsListening(false);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
+
   // Visualizer bars
   const bars = Array.from({ length: 5 });
 
   const isConnected = liveStatus === 'connected';
+  const isConnecting = liveStatus === 'connecting';
+  const hasText = inputText.trim().length > 0;
 
   return (
     <div className="flex flex-col h-full bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-200 relative">
@@ -226,8 +257,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <div>
           <h1 className="text-lg font-bold">Doctor Availability Assistant</h1>
           <p className="text-xs text-gray-300 flex items-center gap-1">
-            <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></span>
-            {isConnected ? 'Live Connection' : 'Text & Voice Chat'}
+            <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : isConnecting ? 'bg-yellow-400 animate-pulse' : 'bg-gray-400'}`}></span>
+            {isConnected ? 'Live Connection' : isConnecting ? 'Connecting...' : 'Text & Voice Chat'}
           </p>
         </div>
         {isConnected && (
@@ -245,9 +276,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         )}
       </div>
 
-      {/* Messages Area (Transcript) - Flex-1 takes remaining space */}
+      {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50 scrollbar-hide">
-        {messages.length === 0 && !isConnected && (
+        {messages.length === 0 && !isConnected && !isConnecting && (
           <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-4">
              <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center">
                 <MessageSquare size={36} className="text-gray-300" />
@@ -255,7 +286,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
              <div className="text-center px-6">
                <h3 className="font-semibold text-gray-600 mb-1">How can I help?</h3>
                <p className="text-sm opacity-75">
-                 Type a query below or use the phone button to speak.
+                 Type a question, create a voice note, or start a live call.
                </p>
                <div className="mt-4 flex flex-wrap justify-center gap-2">
                  <span className="text-xs bg-white border px-3 py-1 rounded-full cursor-pointer hover:bg-gray-50" onClick={() => setInputText("Is Apollo Clinic open now?")}>Is Apollo Clinic open now?</span>
@@ -291,73 +322,86 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Control Area (Input + Buttons) - Flex-shrink-0 to prevent squashing */}
+      {/* Control Area (Input + Buttons) */}
       <div className="flex-shrink-0 bg-white border-t border-gray-100 p-4 z-20">
         
-        {/* Input Bar */}
-        <div className="flex gap-2 mb-4">
-          <div className="relative flex-1">
-            <input
-              type="text"
+        <div className="flex items-end gap-2 max-w-4xl mx-auto w-full">
+          
+          {/* 1. Input Pill (Text + Voice Note) */}
+          <div className="flex-1 bg-gray-100 rounded-3xl flex items-center px-3 py-2 relative transition-all focus-within:ring-2 focus-within:ring-[#024751]/20 focus-within:bg-white border border-transparent focus-within:border-[#024751]/30">
+            
+            <textarea
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Type message or paste URL..."
-              className={`w-full pl-4 pr-10 py-3 rounded-full bg-gray-100 border-none focus:ring-2 focus:ring-[#024751] focus:bg-white text-sm transition-all`}
+              onKeyDown={(e) => {
+                  if(e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSend();
+                  }
+              }}
+              placeholder={isListening ? "Listening..." : "Message Doctor Assistant or paste profile link..."}
+              rows={1}
+              className="flex-1 bg-transparent border-none focus:ring-0 text-gray-800 placeholder-gray-500 resize-none py-1 max-h-24 outline-none text-sm"
+              style={{ minHeight: '24px' }}
             />
-            <LinkIcon size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 opacity-0" />
+
+            {/* Voice Note Button (Inside Pill) */}
+            <button 
+                onClick={toggleDictation}
+                className={`ml-2 p-2 rounded-full transition-all ${
+                    isListening 
+                        ? 'bg-red-500 text-white animate-pulse shadow-md' 
+                        : 'text-gray-500 hover:text-gray-800 hover:bg-gray-200'
+                }`}
+                title="Voice Note"
+            >
+                {isListening ? <StopCircle size={18} /> : <Mic size={18} />}
+            </button>
           </div>
-          <button
-            onClick={handleSend}
-            disabled={!inputText.trim()}
-            className="w-10 h-10 rounded-full bg-[#024751] text-white flex items-center justify-center disabled:opacity-30 hover:bg-[#01353d] transition-colors shadow-sm"
-            title="Send"
-          >
-            <Send size={18} />
-          </button>
+
+          {/* 2. Action Button (Separate Circle) */}
+          <div className="h-[52px] w-[52px] flex-shrink-0">
+             {hasText ? (
+                 <button
+                    onClick={handleSend}
+                    className="w-full h-full rounded-full bg-[#024751] text-white flex items-center justify-center hover:bg-[#01353d] transition-transform transform active:scale-95 shadow-md"
+                    title="Send Message"
+                 >
+                     <Send size={20} className="ml-0.5" />
+                 </button>
+             ) : (
+                 <button
+                    onClick={toggleLiveCall}
+                    disabled={isConnecting}
+                    className={`w-full h-full rounded-full flex items-center justify-center transition-all shadow-md ${
+                        isConnected 
+                        ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse' 
+                        : isConnecting
+                            ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                            : 'bg-white text-[#024751] border border-[#024751]/20 hover:bg-blue-50'
+                    }`}
+                    title={isConnected ? "End Live Call" : isConnecting ? "Connecting..." : "Start Live Call"}
+                 >
+                     {isConnecting ? (
+                         <Loader2 size={24} className="animate-spin text-[#024751]" />
+                     ) : isConnected ? (
+                         <X size={24} />
+                     ) : (
+                         <AudioLines size={24} />
+                     )}
+                 </button>
+             )}
+          </div>
+
         </div>
 
-        {/* Call Buttons - Centered below text input */}
-        <div className="flex justify-center items-center relative">
-            {liveStatus === 'connecting' ? (
-            <div className="flex items-center gap-2 bg-gray-100 px-4 py-2 rounded-full">
-                <div className="w-4 h-4 border-2 border-[#024751] border-t-transparent rounded-full animate-spin"></div>
-                <span className="text-sm font-medium text-gray-600">Connecting...</span>
+        {isConnected && (
+            <div className="text-center mt-2">
+                 <span className="text-[10px] font-medium text-green-600 bg-green-50 px-2 py-0.5 rounded-full border border-green-100">
+                    Live Session Active
+                 </span>
             </div>
-            ) : (
-            <button
-                onClick={handlePhoneClick}
-                className={`
-                relative group flex items-center justify-center w-12 h-12 rounded-full shadow-md transition-all duration-300 transform hover:scale-105 active:scale-95
-                ${isConnected 
-                    ? 'bg-red-500 hover:bg-red-600 text-white ring-2 ring-red-100' 
-                    : 'bg-white text-[#024751] border border-gray-200 hover:bg-gray-50'
-                }
-                `}
-                title={isConnected ? "End Call" : "Start Voice Call"}
-            >
-                {isConnected ? (
-                <PhoneOff size={20} />
-                ) : (
-                <Phone size={20} />
-                )}
-                
-                {/* Ripple effect when connected */}
-                {isConnected && (
-                <span className="absolute w-full h-full rounded-full bg-red-400 opacity-20 animate-ping"></span>
-                )}
-            </button>
-            )}
-            
-            {isConnected && (
-            <div className="absolute right-0 top-1/2 -translate-y-1/2">
-                <div className="flex items-center gap-2 text-[10px] text-gray-400 bg-gray-50 px-2 py-1 rounded-md border border-gray-100">
-                <Activity size={10} className="text-green-500" />
-                <span>VOICE ON</span>
-                </div>
-            </div>
-            )}
-        </div>
+        )}
       </div>
     </div>
   );

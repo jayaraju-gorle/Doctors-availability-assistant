@@ -64,8 +64,6 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
     setStatus('disconnected');
     setVolume(0);
     
-    const currentTranscript = messagesRef.current;
-
     // Stop Recorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
@@ -298,6 +296,9 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
           },
           onclose: (e) => {
             console.log("Session Closed", e);
+            // Ignore normal close or close initiated by us
+            if (!isConnectedRef.current) return;
+            
             let reason = undefined;
             if (e.code !== 1000) {
                 reason = `Connection closed (Code: ${e.code})`;
@@ -305,6 +306,9 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
             disconnect(reason);
           },
           onerror: (err) => {
+            // Ignore errors if we are already disconnecting
+            if (!isConnectedRef.current) return;
+            
             console.error("Session Error:", err);
             disconnect("Connection error occurred.");
           }
@@ -367,8 +371,12 @@ export const useLiveGemini = ({ onRecordingReady }: UseLiveGeminiProps) => {
 
   const sendTextMessage = async (text: string) => {
     if (isConnectedRef.current) {
+        // Flag as disconnected immediately to suppress error popups during the switch
+        isConnectedRef.current = false;
+        
         disconnect("Updating context...");
-        setTimeout(() => connect(text), 500);
+        // Wait 1s for cleanup before reconnecting to prevent socket race conditions
+        setTimeout(() => connect(text), 1000);
     } else {
         connect(text);
     }
