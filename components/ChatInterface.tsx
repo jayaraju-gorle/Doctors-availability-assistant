@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Message, LiveStatus } from '../types';
-import { AudioLines, X, Send, MessageSquare, MapPin, ExternalLink, Star, Banknote, User, Clock, Mic, StopCircle, Loader2 } from 'lucide-react';
+import { Message, LiveStatus, LanguageCode } from '../types';
+import { AudioLines, X, Send, MessageSquare, MapPin, ExternalLink, Star, Banknote, User, Clock, Mic, StopCircle, Loader2, Globe, Info } from 'lucide-react';
 
 interface ChatInterfaceProps {
   messages: Message[];
@@ -11,6 +11,8 @@ interface ChatInterfaceProps {
   volume: number;
   onSendText?: (text: string) => void;
   isBotTyping?: boolean;
+  selectedLanguage: LanguageCode;
+  onLanguageChange: (lang: LanguageCode) => void;
 }
 
 // Helper to format text with Markdown-like syntax and Card support
@@ -87,15 +89,12 @@ const FormattedText = ({ text, isUser }: { text: string; isUser: boolean }) => {
   };
 
   // Split content by '---' to detect cards
-  // We filter out empty splits caused by consecutive delimiters or start/end delimiters
   const sections = text.split(/\n\s*---\s*\n/).filter(s => s.trim().length > 0);
 
-  // If we have multiple sections, we treat them as a "Intro + Cards" layout
   if (sections.length > 1) {
       return (
           <div className="space-y-3">
               {sections.map((section, idx) => {
-                  // Heuristic: If section contains "Location:" or "Fee:", look like a doctor card
                   const isCard = (section.includes("Location:") || section.includes("Fee:")) && !isUser;
                   
                   return (
@@ -111,7 +110,6 @@ const FormattedText = ({ text, isUser }: { text: string; isUser: boolean }) => {
       );
   }
 
-  // Single section (standard message)
   return <SectionContent text={text} processInline={processInline} />;
 };
 
@@ -123,7 +121,6 @@ const SectionContent = ({ text, processInline }: { text: string, processInline: 
                 const trimmed = line.trim();
                 if (!trimmed) return <div key={i} className="h-1" />;
 
-                // Check for specific prefixes to add icons
                 let icon = null;
                 let className = "flex items-start gap-2";
                 
@@ -142,9 +139,8 @@ const SectionContent = ({ text, processInline }: { text: string, processInline: 
                     );
                 }
 
-                // Headers
                 if (trimmed.startsWith('**') && trimmed.endsWith('**')) {
-                   return <div key={i} className="mb-1">{processInline(trimmed)}</div>; // Bold handles the styling
+                   return <div key={i} className="mb-1">{processInline(trimmed)}</div>; 
                 }
 
                 return (
@@ -158,7 +154,6 @@ const SectionContent = ({ text, processInline }: { text: string, processInline: 
     );
 };
 
-// Typing Indicator Component
 const TypingIndicator = () => (
   <div className="flex justify-start animate-in fade-in duration-200">
     <div className="bg-white border border-gray-200 p-3 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-1">
@@ -176,7 +171,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onDisconnect,
   volume,
   onSendText,
-  isBotTyping = false
+  isBotTyping = false,
+  selectedLanguage,
+  onLanguageChange
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [inputText, setInputText] = useState("");
@@ -193,7 +190,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const handleSend = () => {
     if (!inputText.trim()) return;
-
     if (onSendText) {
       onSendText(inputText.trim());
       setInputText("");
@@ -223,7 +219,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = 'en-US';
+    recognition.lang = selectedLanguage; // Use selected language for Dictation too
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
@@ -242,12 +238,21 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     recognition.start();
   };
 
-  // Visualizer bars
   const bars = Array.from({ length: 5 });
-
   const isConnected = liveStatus === 'connected';
   const isConnecting = liveStatus === 'connecting';
   const hasText = inputText.trim().length > 0;
+
+  // Language mapping for the UI
+  const languages = [
+    { code: 'en-IN', label: 'English', native: 'English' },
+    { code: 'hi-IN', label: 'Hindi', native: 'हिंदी' },
+    { code: 'te-IN', label: 'Telugu', native: 'తెలుగు' },
+    { code: 'ta-IN', label: 'Tamil', native: 'தமிழ்' },
+    { code: 'bn-IN', label: 'Bengali', native: 'বাংলা' },
+    { code: 'mr-IN', label: 'Marathi', native: 'मराठी' },
+    { code: 'gu-IN', label: 'Gujarati', native: 'ગુજરાતી' }
+  ];
 
   return (
     <div className="flex flex-col h-full bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-200 relative">
@@ -261,19 +266,55 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             {isConnected ? 'Live Connection' : isConnecting ? 'Connecting...' : 'Text & Voice Chat'}
           </p>
         </div>
-        {isConnected && (
-           <div className="flex items-center gap-1">
-             {bars.map((_, i) => (
-               <div 
-                 key={i}
-                 className="w-1 bg-white/50 rounded-full transition-all duration-75 ease-in-out"
-                 style={{ 
-                   height: `${Math.max(4, volume * 30 * (Math.random() + 0.5))}px` 
-                 }}
-               />
-             ))}
-           </div>
-        )}
+
+        <div className="flex items-center gap-3">
+            {/* Language Selector */}
+            <div className="relative group z-20">
+                <button className="flex flex-col items-center gap-0.5 bg-white/10 hover:bg-white/20 px-2.5 py-1 rounded-md transition-colors border border-white/10 group-hover:border-white/30">
+                    <div className="flex items-center gap-1.5">
+                      <Globe size={14} />
+                      <span className="uppercase text-xs font-bold">{selectedLanguage.split('-')[0]}</span>
+                    </div>
+                    <span className="text-[8px] opacity-70 font-medium tracking-tighter uppercase">(Voice Only)</span>
+                </button>
+                {/* Scrollable container for many languages */}
+                <div className="absolute right-0 top-full pt-2 w-48 hidden group-hover:block z-50">
+                    <div className="bg-white rounded-lg shadow-xl py-1 border border-gray-200 max-h-80 overflow-y-auto">
+                        <div className="px-3 py-2 border-b border-gray-100 flex items-center gap-2 bg-gray-50/50">
+                           <Info size={12} className="text-[#024751]" />
+                           <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Voice Language</span>
+                        </div>
+                        {languages.map((lang) => (
+                          <button 
+                            key={lang.code}
+                            onClick={() => onLanguageChange(lang.code as LanguageCode)} 
+                            className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-50 flex justify-between items-center transition-colors ${selectedLanguage === lang.code ? 'text-[#024751] font-bold bg-[#024751]/5' : 'text-gray-700'}`}
+                          >
+                            <span>{lang.label}</span>
+                            <span className="text-[10px] opacity-60 font-medium">{lang.native}</span>
+                          </button>
+                        ))}
+                        <div className="px-3 py-2 mt-1 text-[9px] text-gray-400 leading-tight">
+                          * Applies to Live Calls and Voice Typing only. Text chat defaults to English context.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {isConnected && (
+            <div className="flex items-center gap-1">
+                {bars.map((_, i) => (
+                <div 
+                    key={i}
+                    className="w-1 bg-white/50 rounded-full transition-all duration-75 ease-in-out"
+                    style={{ 
+                    height: `${Math.max(4, volume * 30 * (Math.random() + 0.5))}px` 
+                    }}
+                />
+                ))}
+            </div>
+            )}
+        </div>
       </div>
 
       {/* Messages Area */}
@@ -286,7 +327,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
              <div className="text-center px-6">
                <h3 className="font-semibold text-gray-600 mb-1">How can I help?</h3>
                <p className="text-sm opacity-75">
-                 Type a question, create a voice note, or start a live call.
+                 Type your query or start a <strong>Voice Call</strong> to find doctors.
                </p>
                <div className="mt-4 flex flex-wrap justify-center gap-2">
                  <span className="text-xs bg-white border px-3 py-1 rounded-full cursor-pointer hover:bg-gray-50" onClick={() => setInputText("Is Apollo Clinic open now?")}>Is Apollo Clinic open now?</span>
@@ -322,14 +363,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Control Area (Input + Buttons) */}
+      {/* Control Area */}
       <div className="flex-shrink-0 bg-white border-t border-gray-100 p-4 z-20">
-        
         <div className="flex items-end gap-2 max-w-4xl mx-auto w-full">
-          
-          {/* 1. Input Pill (Text + Voice Note) */}
+          {/* Input Pill */}
           <div className="flex-1 bg-gray-100 rounded-3xl flex items-center px-3 py-2 relative transition-all focus-within:ring-2 focus-within:ring-[#024751]/20 focus-within:bg-white border border-transparent focus-within:border-[#024751]/30">
-            
             <textarea
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
@@ -339,13 +377,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                       handleSend();
                   }
               }}
-              placeholder={isListening ? "Listening..." : "Message Doctor Assistant or paste profile link..."}
+              placeholder={isListening ? "Listening..." : "Message Doctor Assistant..."}
               rows={1}
               className="flex-1 bg-transparent border-none focus:ring-0 text-gray-800 placeholder-gray-500 resize-none py-1 max-h-24 outline-none text-sm"
               style={{ minHeight: '24px' }}
             />
-
-            {/* Voice Note Button (Inside Pill) */}
             <button 
                 onClick={toggleDictation}
                 className={`ml-2 p-2 rounded-full transition-all ${
@@ -359,7 +395,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             </button>
           </div>
 
-          {/* 2. Action Button (Separate Circle) */}
+          {/* Action Button */}
           <div className="h-[52px] w-[52px] flex-shrink-0">
              {hasText ? (
                  <button
@@ -392,13 +428,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                  </button>
              )}
           </div>
-
         </div>
-
         {isConnected && (
             <div className="text-center mt-2">
                  <span className="text-[10px] font-medium text-green-600 bg-green-50 px-2 py-0.5 rounded-full border border-green-100">
-                    Live Session Active
+                    Live Session Active ({selectedLanguage.split('-')[0].toUpperCase()} Mode)
                  </span>
             </div>
         )}

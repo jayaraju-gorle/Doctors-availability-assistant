@@ -1,3 +1,4 @@
+
 export interface Message {
   id: string;
   role: 'user' | 'model';
@@ -14,6 +15,8 @@ export enum ChatState {
 }
 
 export type LiveStatus = 'disconnected' | 'connecting' | 'connected';
+
+export type LanguageCode = 'en-IN' | 'hi-IN' | 'te-IN' | 'ta-IN' | 'bn-IN' | 'mr-IN' | 'gu-IN';
 
 export interface CallRecord {
   id: string;
