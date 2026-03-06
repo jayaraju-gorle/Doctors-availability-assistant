@@ -11,6 +11,11 @@ export const initializeGemini = () => {
   ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
+export const getGeminiClient = () => {
+  if (!ai) initializeGemini();
+  return ai;
+};
+
 export const sendMessageToGemini = async (text: string, history: Message[]): Promise<string> => {
   if (!ai) initializeGemini();
   if (!ai) throw new Error("Failed to initialize Gemini Client");

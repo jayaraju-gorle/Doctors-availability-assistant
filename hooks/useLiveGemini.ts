@@ -1,9 +1,10 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { streamMessageToGemini, generateSpeech } from '../services/geminiService';
-import { base64ToUint8Array, decodeAudioData } from '../utils/audio';
+import { getGeminiClient } from '../services/geminiService';
+import { base64ToUint8Array, decodeAudioData, float32ToInt16, arrayBufferToBase64 } from '../utils/audio';
 import { Message, LiveStatus, CallRecord, LanguageCode } from '../types';
-import { CLEAN_TEXT_FOR_SPEECH } from '../constants';
+import { SYSTEM_INSTRUCTION } from '../constants';
+import { LiveServerMessage, Modality } from '@google/genai';
 
 interface UseLiveGeminiProps {
   onRecordingReady: (record: CallRecord) => void;
@@ -15,30 +16,20 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
   const [messages, setMessages] = useState<Message[]>([]);
   const [volume, setVolume] = useState(0);
 
-  // Refs for State Management
   const isConnectedRef = useRef(false);
   const messagesRef = useRef<Message[]>([]);
-  const recognitionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const sessionRef = useRef<any>(null);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const isProcessingRef = useRef(false);
-  const languageRef = useRef(language);
-
-  // Audio Queue Management
   const audioQueueRef = useRef<AudioBuffer[]>([]);
   const isPlayingAudioRef = useRef(false);
-  
-  // Fake volume visualizer interval
   const volumeIntervalRef = useRef<any>(null);
 
-  // Keep ref in sync with prop for the event listeners
-  useEffect(() => {
-    languageRef.current = language;
-    // If connected, restart recognition to pick up new language
-    if (isConnectedRef.current && recognitionRef.current) {
-        recognitionRef.current.stop(); // onend will restart it with new lang
-    }
-  }, [language]);
+  // Transcription state
+  const currentUserMsgIdRef = useRef<string | null>(null);
+  const currentModelMsgIdRef = useRef<string | null>(null);
 
   const setMessagesSafe = (update: React.SetStateAction<Message[]>) => {
      setMessages(prev => {
@@ -46,20 +37,6 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
          messagesRef.current = newVal;
          return newVal;
      });
-  };
-
-  const stopAudioPlayback = () => {
-    if (currentSourceRef.current) {
-        try { currentSourceRef.current.stop(); } catch(e) {}
-        currentSourceRef.current = null;
-    }
-    // Clear queue
-    audioQueueRef.current = [];
-    isPlayingAudioRef.current = false;
-    
-    if (audioContextRef.current) {
-        audioContextRef.current.suspend().catch(() => {});
-    }
   };
 
   const startVolumeSimulation = () => {
@@ -74,7 +51,6 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
       setVolume(0);
   };
 
-  // Audio Queue Processor
   const playBuffer = async (buffer: AudioBuffer) => {
       if (!isConnectedRef.current) return;
       if (!audioContextRef.current) return;
@@ -101,21 +77,7 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
 
   const processAudioQueue = async () => {
     if (isPlayingAudioRef.current) return;
-    
-    if (audioQueueRef.current.length === 0) {
-        // Queue is empty. 
-        // If we are connected and NOT processing (meaning no more text/audio is being generated), 
-        // we should restart listening now.
-        if (isConnectedRef.current && !isProcessingRef.current) {
-             // Slight delay to ensure audio is fully cleared and to avoid picking up echo
-             setTimeout(() => {
-                 if (isConnectedRef.current && !isProcessingRef.current && !isPlayingAudioRef.current && audioQueueRef.current.length === 0) {
-                     try { recognitionRef.current?.start(); } catch(e) {}
-                 }
-             }, 200);
-        }
-        return;
-    }
+    if (audioQueueRef.current.length === 0) return;
 
     isPlayingAudioRef.current = true;
     const buffer = audioQueueRef.current.shift();
@@ -125,7 +87,6 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
     }
     
     isPlayingAudioRef.current = false;
-    // Process next item recursively
     processAudioQueue();
   };
 
@@ -134,197 +95,196 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
     processAudioQueue();
   };
 
-  const handleUserTurn = async (text: string) => {
-      if (isProcessingRef.current) return;
-      isProcessingRef.current = true;
-      stopVolumeSimulation();
-
-      const userMsg: Message = {
-          id: Date.now().toString(),
-          role: 'user',
-          text: text,
-          timestamp: new Date(),
-          isStreaming: false
-      };
-      setMessagesSafe(prev => [...prev, userMsg]);
-
-      // Placeholder for Model Response
-      const modelMsgId = (Date.now() + 1).toString();
-      const initialModelMsg: Message = {
-          id: modelMsgId,
-          role: 'model',
-          text: "", // Start empty
-          timestamp: new Date(),
-          isStreaming: true
-      };
-      setMessagesSafe(prev => [...prev, initialModelMsg]);
-
-      try {
-          const stream = streamMessageToGemini(text, messagesRef.current);
-          
-          let fullText = "";
-          let sentenceBuffer = "";
-          
-          for await (const chunk of stream) {
-              fullText += chunk;
-              sentenceBuffer += chunk;
-
-              // Update UI
-              setMessagesSafe(prev => prev.map(m => 
-                  m.id === modelMsgId ? { ...m, text: fullText } : m
-              ));
-
-              // Check for sentence delimiters to stream audio
-              // We look for punctuation followed by space or newline, or just newline
-              const sentenceMatch = sentenceBuffer.match(/([.!?\n]+)\s/);
-              
-              if (sentenceMatch && sentenceMatch.index !== undefined) {
-                   const splitIndex = sentenceMatch.index + sentenceMatch[0].length;
-                   const sentence = sentenceBuffer.slice(0, splitIndex);
-                   const remainder = sentenceBuffer.slice(splitIndex);
-                   
-                   // Process this sentence for TTS
-                   const cleanSentence = CLEAN_TEXT_FOR_SPEECH(sentence);
-                   // Increased threshold to 4 to avoid tiny chunks triggering 400 errors or rate limits
-                   if (cleanSentence.length > 4) { 
-                        generateSpeech(cleanSentence).then(async (audioBase64) => {
-                            if (audioBase64 && isConnectedRef.current) {
-                                if (!audioContextRef.current) {
-                                    const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
-                                    audioContextRef.current = new AudioContextClass();
-                                }
-                                const bytes = base64ToUint8Array(audioBase64);
-                                const buffer = await decodeAudioData(bytes, audioContextRef.current, 24000);
-                                queueAudioBuffer(buffer);
-                            }
-                        });
-                   }
-                   
-                   sentenceBuffer = remainder;
-              }
-          }
-
-          // Process remaining buffer
-          if (sentenceBuffer.trim().length > 0) {
-             const cleanSentence = CLEAN_TEXT_FOR_SPEECH(sentenceBuffer);
-             if (cleanSentence.length > 4) {
-                const audioBase64 = await generateSpeech(cleanSentence);
-                 if (audioBase64 && isConnectedRef.current) {
-                    if (!audioContextRef.current) {
-                        const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
-                        audioContextRef.current = new AudioContextClass();
-                    }
-                    const bytes = base64ToUint8Array(audioBase64);
-                    const buffer = await decodeAudioData(bytes, audioContextRef.current, 24000);
-                    queueAudioBuffer(buffer);
-                 }
-             }
-          }
-
-          // Final update to remove streaming flag
-          setMessagesSafe(prev => prev.map(m => 
-            m.id === modelMsgId ? { ...m, isStreaming: false } : m
-          ));
-
-      } catch (e) {
-          console.error("Error in conversation loop", e);
-          setMessagesSafe(prev => prev.map(m => 
-            m.id === modelMsgId ? { ...m, text: "Sorry, I encountered an error.", isStreaming: false } : m
-          ));
-      } finally {
-          isProcessingRef.current = false;
-          // Restart recognition is handled by audio queue completion or onend loop
-          // But if no audio was generated, we need to restart here
-          if (audioQueueRef.current.length === 0 && !isPlayingAudioRef.current && isConnectedRef.current) {
-               try { recognitionRef.current?.start(); } catch(e) {}
-          }
-      }
+  const stopAudioPlayback = () => {
+    if (currentSourceRef.current) {
+        try { currentSourceRef.current.stop(); } catch(e) {}
+        currentSourceRef.current = null;
+    }
+    audioQueueRef.current = [];
+    isPlayingAudioRef.current = false;
   };
-
-  const initializeRecognition = () => {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-          console.error("Speech Recognition API not supported in this browser.");
-          return null;
-      }
-      const recognition = new SpeechRecognition();
-      
-      // Dynamic Language Selection
-      recognition.lang = languageRef.current;
-      
-      recognition.continuous = false; 
-      recognition.interimResults = false;
-
-      recognition.onstart = () => {
-          if (isConnectedRef.current) {
-             startVolumeSimulation();
-          }
-      };
-
-      recognition.onend = () => {
-          stopVolumeSimulation();
-          // Auto-restart if we are still "Connected" and not processing a response AND not playing audio
-          if (isConnectedRef.current && !isProcessingRef.current && !isPlayingAudioRef.current && audioQueueRef.current.length === 0) {
-             setTimeout(() => {
-                 if (isConnectedRef.current && !isProcessingRef.current) {
-                     // Re-initialize to ensure we pick up language changes
-                     if (recognitionRef.current && recognitionRef.current.lang !== languageRef.current) {
-                         recognitionRef.current = initializeRecognition();
-                     }
-                     try { recognitionRef.current?.start(); } catch(e) {}
-                 }
-             }, 300);
-          }
-      };
-
-      recognition.onresult = async (event: any) => {
-          const transcript = event.results[0][0].transcript;
-          if (transcript.trim()) {
-              await handleUserTurn(transcript);
-          }
-      };
-      
-      recognition.onerror = (event: any) => {
-          console.warn("Recognition error", event.error);
-          stopVolumeSimulation();
-          if (event.error === 'no-speech' && isConnectedRef.current && !isProcessingRef.current) {
-              return; // onend will trigger restart
-          }
-      };
-
-      return recognition;
-  };
-
-  const connect = useCallback((initialContext?: string) => {
-      setStatus('connected');
-      isConnectedRef.current = true;
-      
-      if (!audioContextRef.current) {
-          const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
-          audioContextRef.current = new AudioContextClass();
-      }
-      if (audioContextRef.current?.state === 'suspended') {
-          audioContextRef.current.resume();
-      }
-
-      if (!recognitionRef.current) {
-          recognitionRef.current = initializeRecognition();
-      }
-      try { recognitionRef.current?.start(); } catch (e) { }
-  }, []);
 
   const disconnect = useCallback(() => {
       setStatus('disconnected');
       isConnectedRef.current = false;
       stopAudioPlayback();
-      if (recognitionRef.current) {
-          recognitionRef.current.stop();
-      }
       stopVolumeSimulation();
+
+      if (scriptProcessorRef.current) {
+          scriptProcessorRef.current.disconnect();
+          scriptProcessorRef.current.onaudioprocess = null;
+          scriptProcessorRef.current = null;
+      }
+      if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach(track => track.stop());
+          mediaStreamRef.current = null;
+      }
+      if (audioContextRef.current) {
+          audioContextRef.current.close().catch(() => {});
+          audioContextRef.current = null;
+      }
+      if (sessionRef.current) {
+          sessionRef.current.then((session: any) => session.close()).catch(() => {});
+          sessionRef.current = null;
+      }
   }, []);
 
+  const connect = useCallback(async (initialContext?: string) => {
+      setStatus('connecting');
+      isConnectedRef.current = true;
+      
+      try {
+          const ai = getGeminiClient();
+          
+          const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
+          audioContextRef.current = new AudioContextClass({ sampleRate: 16000 });
+          await audioContextRef.current.resume();
+
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaStreamRef.current = stream;
+
+          const source = audioContextRef.current.createMediaStreamSource(stream);
+          const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+          scriptProcessorRef.current = processor;
+
+          source.connect(processor);
+          processor.connect(audioContextRef.current.destination);
+
+          let sessionPromise = ai.live.connect({
+            model: "gemini-2.5-flash-native-audio-preview-09-2025",
+            config: {
+              responseModalities: [Modality.AUDIO],
+              speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } },
+              },
+              systemInstruction: SYSTEM_INSTRUCTION + (initialContext ? `\n\n${initialContext}` : "") + `\n\nPlease speak in the following language: ${language}`,
+              outputAudioTranscription: {},
+              inputAudioTranscription: {},
+            },
+            callbacks: {
+              onopen: () => {
+                setStatus('connected');
+                processor.onaudioprocess = (e) => {
+                  if (!isConnectedRef.current) return;
+                  const inputData = e.inputBuffer.getChannelData(0);
+                  const pcm16 = float32ToInt16(inputData);
+                  const base64Data = arrayBufferToBase64(pcm16.buffer);
+                  sessionPromise.then(session => {
+                    session.sendRealtimeInput({
+                      media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
+                    });
+                  });
+                };
+              },
+              onmessage: async (message: LiveServerMessage) => {
+                // Handle Audio Output
+                const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+                if (base64Audio && isConnectedRef.current) {
+                  if (!audioContextRef.current) return;
+                  const bytes = base64ToUint8Array(base64Audio);
+                  const buffer = await decodeAudioData(bytes, audioContextRef.current, 24000);
+                  queueAudioBuffer(buffer);
+                }
+
+                // Handle Interruption
+                if (message.serverContent?.interrupted) {
+                  stopAudioPlayback();
+                }
+
+                // Handle Input Transcription (User)
+                const inputTranscription = message.serverContent?.inputTranscription;
+                if (inputTranscription?.text) {
+                  if (!currentUserMsgIdRef.current) {
+                    currentUserMsgIdRef.current = Date.now().toString();
+                    const newMsg: Message = {
+                      id: currentUserMsgIdRef.current,
+                      role: 'user',
+                      text: inputTranscription.text,
+                      timestamp: new Date(),
+                      isStreaming: true
+                    };
+                    setMessagesSafe(prev => [...prev, newMsg]);
+                  } else {
+                    setMessagesSafe(prev => prev.map(m => 
+                      m.id === currentUserMsgIdRef.current 
+                        ? { ...m, text: m.text + inputTranscription.text } 
+                        : m
+                    ));
+                  }
+                  if (inputTranscription.finished) {
+                    setMessagesSafe(prev => prev.map(m => 
+                      m.id === currentUserMsgIdRef.current 
+                        ? { ...m, isStreaming: false } 
+                        : m
+                    ));
+                    currentUserMsgIdRef.current = null;
+                  }
+                }
+
+                // Handle Output Transcription (Model)
+                const outputTranscription = message.serverContent?.outputTranscription;
+                if (outputTranscription?.text) {
+                  if (!currentModelMsgIdRef.current) {
+                    currentModelMsgIdRef.current = (Date.now() + 1).toString();
+                    const newMsg: Message = {
+                      id: currentModelMsgIdRef.current,
+                      role: 'model',
+                      text: outputTranscription.text,
+                      timestamp: new Date(),
+                      isStreaming: true
+                    };
+                    setMessagesSafe(prev => [...prev, newMsg]);
+                  } else {
+                    setMessagesSafe(prev => prev.map(m => 
+                      m.id === currentModelMsgIdRef.current 
+                        ? { ...m, text: m.text + outputTranscription.text } 
+                        : m
+                    ));
+                  }
+                  if (outputTranscription.finished) {
+                    setMessagesSafe(prev => prev.map(m => 
+                      m.id === currentModelMsgIdRef.current 
+                        ? { ...m, isStreaming: false } 
+                        : m
+                    ));
+                    currentModelMsgIdRef.current = null;
+                  }
+                }
+              },
+              onclose: () => {
+                disconnect();
+              },
+              onerror: (error) => {
+                console.error("Live API Error:", error);
+                disconnect();
+              }
+            }
+          });
+          
+          sessionRef.current = sessionPromise;
+
+      } catch (error) {
+          console.error("Failed to connect to Gemini Live:", error);
+          disconnect();
+      }
+  }, [disconnect, language]);
+
   const sendTextMessage = useCallback((text: string) => {
-      handleUserTurn(text);
+      if (sessionRef.current && isConnectedRef.current) {
+          sessionRef.current.then((session: any) => {
+              session.sendRealtimeInput({
+                  text: text
+              });
+          });
+          const msg: Message = {
+              id: Date.now().toString(),
+              role: 'user',
+              text,
+              timestamp: new Date(),
+              isStreaming: false
+          };
+          setMessagesSafe(prev => [...prev, msg]);
+      }
   }, []);
 
   const addMessage = useCallback((role: 'user' | 'model', text: string) => {

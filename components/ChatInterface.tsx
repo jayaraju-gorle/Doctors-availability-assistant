@@ -268,39 +268,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-            {/* Language Selector */}
-            <div className="relative group z-20">
-                <button className="flex flex-col items-center gap-0.5 bg-white/10 hover:bg-white/20 px-2.5 py-1 rounded-md transition-colors border border-white/10 group-hover:border-white/30">
-                    <div className="flex items-center gap-1.5">
-                      <Globe size={14} />
-                      <span className="uppercase text-xs font-bold">{selectedLanguage.split('-')[0]}</span>
-                    </div>
-                    <span className="text-[8px] opacity-70 font-medium tracking-tighter uppercase">(Voice Only)</span>
-                </button>
-                {/* Scrollable container for many languages */}
-                <div className="absolute right-0 top-full pt-2 w-48 hidden group-hover:block z-50">
-                    <div className="bg-white rounded-lg shadow-xl py-1 border border-gray-200 max-h-80 overflow-y-auto">
-                        <div className="px-3 py-2 border-b border-gray-100 flex items-center gap-2 bg-gray-50/50">
-                           <Info size={12} className="text-[#024751]" />
-                           <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Voice Language</span>
-                        </div>
-                        {languages.map((lang) => (
-                          <button 
-                            key={lang.code}
-                            onClick={() => onLanguageChange(lang.code as LanguageCode)} 
-                            className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-50 flex justify-between items-center transition-colors ${selectedLanguage === lang.code ? 'text-[#024751] font-bold bg-[#024751]/5' : 'text-gray-700'}`}
-                          >
-                            <span>{lang.label}</span>
-                            <span className="text-[10px] opacity-60 font-medium">{lang.native}</span>
-                          </button>
-                        ))}
-                        <div className="px-3 py-2 mt-1 text-[9px] text-gray-400 leading-tight">
-                          * Applies to Live Calls and Voice Typing only. Text chat defaults to English context.
-                        </div>
-                    </div>
-                </div>
-            </div>
-
             {isConnected && (
             <div className="flex items-center gap-1">
                 {bars.map((_, i) => (
@@ -432,7 +399,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         {isConnected && (
             <div className="text-center mt-2">
                  <span className="text-[10px] font-medium text-green-600 bg-green-50 px-2 py-0.5 rounded-full border border-green-100">
-                    Live Session Active ({selectedLanguage.split('-')[0].toUpperCase()} Mode)
+                    Live Session Active
                  </span>
             </div>
         )}

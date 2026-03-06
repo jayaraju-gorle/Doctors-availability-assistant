@@ -2,6 +2,60 @@ import { CallRecord, ChatSession, Message } from '../types';
 import { db, storage } from '../firebaseConfig';
 import firebase from '../firebaseConfig'; 
 
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string;
+    email?: string;
+    emailVerified?: boolean;
+    isAnonymous?: boolean;
+    tenantId?: string;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const auth = firebase.auth && firebase.auth();
+  const currentUser = auth ? auth.currentUser : null;
+  
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: currentUser?.uid,
+      email: currentUser?.email || undefined,
+      emailVerified: currentUser?.emailVerified,
+      isAnonymous: currentUser?.isAnonymous,
+      tenantId: currentUser?.tenantId || undefined,
+      providerInfo: currentUser?.providerData.map(provider => ({
+        providerId: provider?.providerId || '',
+        displayName: provider?.displayName || null,
+        email: provider?.email || null,
+        photoUrl: provider?.photoURL || null
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 export const api = {
   
   // --- RECORDINGS (Firestore + Storage) ---
@@ -27,7 +81,10 @@ export const api = {
           transcript: data.transcript || [] // Load transcript if exists
         } as CallRecord;
       });
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.message?.includes('Missing or insufficient permissions')) {
+        handleFirestoreError(error, OperationType.LIST, 'recordings');
+      }
       console.error("Error fetching recordings:", error);
       return [];
     }
@@ -49,7 +106,10 @@ export const api = {
         transcript: record.transcript || [] // Save the chat history of this call
       });
       
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.message?.includes('Missing or insufficient permissions')) {
+        handleFirestoreError(error, OperationType.CREATE, 'recordings');
+      }
       console.error("Error uploading recording:", error);
     }
   },
@@ -67,7 +127,10 @@ export const api = {
         messages: firebase.firestore.FieldValue.arrayUnion(message)
       }, { merge: true });
 
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.message?.includes('Missing or insufficient permissions')) {
+        handleFirestoreError(error, OperationType.WRITE, `text_sessions/${sessionId}`);
+      }
       console.error("Error logging chat message:", error);
     }
   },
@@ -88,7 +151,10 @@ export const api = {
           lastMessage: data.lastMessage || ""
         } as ChatSession;
       });
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.message?.includes('Missing or insufficient permissions')) {
+        handleFirestoreError(error, OperationType.LIST, 'text_sessions');
+      }
       console.error("Error fetching chat sessions:", error);
       return [];
     }

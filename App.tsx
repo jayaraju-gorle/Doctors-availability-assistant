@@ -7,6 +7,7 @@ import { useLiveGemini } from './hooks/useLiveGemini';
 import { CallRecord, ChatSession, Message, LanguageCode } from './types';
 import { api } from './services/api';
 import { sendMessageToGemini } from './services/geminiService';
+import firebase from './firebaseConfig';
 
 const App: React.FC = () => {
   const [isAdminView, setIsAdminView] = useState(false);
@@ -22,10 +23,22 @@ const App: React.FC = () => {
 
   useEffect(() => {
     textSessionId.current = "session_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+    
+    // Attempt anonymous sign-in so users can write to Firestore if rules require auth
+    const auth = firebase.auth && firebase.auth();
+    if (auth) {
+      auth.signInAnonymously().catch((error) => {
+        console.warn("Anonymous sign-in failed. Firestore writes may fail if rules require authentication.", error);
+      });
+    }
   }, []);
 
+  const [error, setError] = useState<Error | null>(null);
+
   const refreshData = async () => {
+    if (!isAdminView) return; // Only fetch data if in admin view
     setIsLoadingData(true);
+    setError(null);
     try {
       const [recData, chatData] = await Promise.all([
         api.fetchRecordings(),
@@ -33,16 +46,15 @@ const App: React.FC = () => {
       ]);
       setRecordings(recData);
       setChatSessions(chatData);
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to fetch data", e);
+      if (e instanceof Error && (e.message.includes('Missing or insufficient permissions') || e.message.includes('FirestoreErrorInfo'))) {
+        setError(e);
+      }
     } finally {
       setIsLoadingData(false);
     }
   };
-
-  useEffect(() => {
-    refreshData();
-  }, []);
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
@@ -55,8 +67,12 @@ const App: React.FC = () => {
 
   const handleRecordingReady = async (record: CallRecord) => {
     setRecordings(prev => [record, ...prev]);
-    await api.uploadRecording(record);
-    refreshData(); 
+    try {
+      await api.uploadRecording(record);
+      refreshData(); 
+    } catch (e: any) {
+      console.warn("Could not upload recording due to permissions or other error.", e);
+    }
   };
 
   const { status, messages, connect, disconnect, volume, sendTextMessage, addMessage } = useLiveGemini({
@@ -85,7 +101,11 @@ const App: React.FC = () => {
       const userMsg: Message = { id: Date.now().toString(), role: 'user', text, timestamp: new Date() };
       
       addMessage('user', text);
-      await api.logChatMessage(textSessionId.current, userMsg);
+      try {
+        await api.logChatMessage(textSessionId.current, userMsg);
+      } catch (e: any) {
+        console.warn("Could not log chat message due to permissions or other error.", e);
+      }
 
       setIsBotTyping(true); 
       try {
@@ -95,8 +115,11 @@ const App: React.FC = () => {
         addMessage('model', responseText);
         await api.logChatMessage(textSessionId.current, modelMsg);
 
-      } catch (e) {
-        addMessage('model', "Sorry, I encountered an error. Please try again.");
+      } catch (e: any) {
+        console.warn("Could not log model message due to permissions or other error.", e);
+        if (!e?.message?.includes('Missing or insufficient permissions') && !e?.message?.includes('FirestoreErrorInfo')) {
+          addMessage('model', "Sorry, I encountered an error. Please try again.");
+        }
       } finally {
         setIsBotTyping(false); 
       }
@@ -127,6 +150,7 @@ const App: React.FC = () => {
               recordings={recordings}
               chatSessions={chatSessions}
               onBack={() => setIsAdminView(false)}
+              error={error}
             />
           </div>
         ) : (
