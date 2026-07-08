@@ -1,0 +1,56 @@
+{
+  "entities": {
+    "Recording": {
+      "title": "Recording",
+      "description": "Represents an audio recording of a call session.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "number"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "transcript": {
+          "type": "array"
+        }
+      },
+      "required": ["url", "duration", "timestamp", "callId", "transcript"]
+    },
+    "TextSession": {
+      "title": "TextSession",
+      "description": "Represents a text chat session.",
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastMessage": {
+          "type": "string"
+        },
+        "messages": {
+          "type": "array"
+        }
+      },
+      "required": ["timestamp", "lastMessage", "messages"]
+    }
+  },
+  "firestore": {
+    "recordings": {
+      "schema": "Recording",
+      "description": "Audio recordings and transcripts."
+    },
+    "text_sessions": {
+      "schema": "TextSession",
+      "description": "Text chat sessions."
+    }
+  }
+}

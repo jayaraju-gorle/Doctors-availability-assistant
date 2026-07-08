@@ -1,10 +1,6 @@
-
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { getGeminiClient } from '../services/geminiService';
+import React, { useState, useRef, useCallback } from 'react';
 import { base64ToUint8Array, decodeAudioData, float32ToInt16, arrayBufferToBase64 } from '../utils/audio';
 import { Message, LiveStatus, CallRecord, LanguageCode } from '../types';
-import { SYSTEM_INSTRUCTION } from '../constants';
-import { LiveServerMessage, Modality } from '@google/genai';
 
 interface UseLiveGeminiProps {
   onRecordingReady: (record: CallRecord) => void;
@@ -21,7 +17,7 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const sessionRef = useRef<any>(null);
+  const sessionRef = useRef<Promise<WebSocket> | null>(null);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const audioQueueRef = useRef<AudioBuffer[]>([]);
   const isPlayingAudioRef = useRef(false);
@@ -124,7 +120,11 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
           audioContextRef.current = null;
       }
       if (sessionRef.current) {
-          sessionRef.current.then((session: any) => session.close()).catch(() => {});
+          sessionRef.current.then((ws: WebSocket) => {
+              if (ws && typeof ws.close === 'function') {
+                  ws.close();
+              }
+          }).catch(() => {});
           sessionRef.current = null;
       }
   }, []);
@@ -134,8 +134,6 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
       isConnectedRef.current = true;
       
       try {
-          const ai = getGeminiClient();
-          
           const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
           audioContextRef.current = new AudioContextClass({ sampleRate: 16000 });
           await audioContextRef.current.resume();
@@ -150,118 +148,130 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
           source.connect(processor);
           processor.connect(audioContextRef.current.destination);
 
-          let sessionPromise = ai.live.connect({
-            model: "gemini-2.5-flash-native-audio-preview-09-2025",
-            config: {
-              responseModalities: [Modality.AUDIO],
-              speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } },
-              },
-              systemInstruction: SYSTEM_INSTRUCTION + (initialContext ? `\n\n${initialContext}` : "") + `\n\nPlease speak in the following language: ${language}`,
-              outputAudioTranscription: {},
-              inputAudioTranscription: {},
-            },
-            callbacks: {
-              onopen: () => {
-                setStatus('connected');
-                processor.onaudioprocess = (e) => {
+          // Establish WebSocket connection to our Express backend
+          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const wsUrl = `${protocol}//${window.location.host}/live?language=${encodeURIComponent(language)}&initialContext=${encodeURIComponent(initialContext || '')}`;
+          const ws = new WebSocket(wsUrl);
+
+          const wsPromise = new Promise<WebSocket>((resolve, reject) => {
+              ws.onopen = () => {
+                  setStatus('connected');
+                  resolve(ws);
+              };
+              ws.onerror = (err) => {
+                  reject(err);
+              };
+          });
+
+          sessionRef.current = wsPromise;
+
+          wsPromise.then((openedWs) => {
+              processor.onaudioprocess = (e) => {
                   if (!isConnectedRef.current) return;
                   const inputData = e.inputBuffer.getChannelData(0);
                   const pcm16 = float32ToInt16(inputData);
                   const base64Data = arrayBufferToBase64(pcm16.buffer);
-                  sessionPromise.then(session => {
-                    session.sendRealtimeInput({
-                      media: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
-                    });
-                  });
-                };
-              },
-              onmessage: async (message: LiveServerMessage) => {
-                // Handle Audio Output
-                const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-                if (base64Audio && isConnectedRef.current) {
-                  if (!audioContextRef.current) return;
-                  const bytes = base64ToUint8Array(base64Audio);
-                  const buffer = await decodeAudioData(bytes, audioContextRef.current, 24000);
-                  queueAudioBuffer(buffer);
-                }
+                  
+                  // Send audio payload matching sendRealtimeInput format
+                  openedWs.send(JSON.stringify({
+                      audio: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
+                  }));
+              };
 
-                // Handle Interruption
-                if (message.serverContent?.interrupted) {
-                  stopAudioPlayback();
-                }
+              openedWs.onmessage = async (event) => {
+                  try {
+                      const message = JSON.parse(event.data);
+                      
+                      // Handle Audio Output
+                      const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+                      if (base64Audio && isConnectedRef.current) {
+                        if (!audioContextRef.current) return;
+                        const bytes = base64ToUint8Array(base64Audio);
+                        const buffer = await decodeAudioData(bytes, audioContextRef.current, 24000);
+                        queueAudioBuffer(buffer);
+                      }
 
-                // Handle Input Transcription (User)
-                const inputTranscription = message.serverContent?.inputTranscription;
-                if (inputTranscription?.text) {
-                  if (!currentUserMsgIdRef.current) {
-                    currentUserMsgIdRef.current = Date.now().toString();
-                    const newMsg: Message = {
-                      id: currentUserMsgIdRef.current,
-                      role: 'user',
-                      text: inputTranscription.text,
-                      timestamp: new Date(),
-                      isStreaming: true
-                    };
-                    setMessagesSafe(prev => [...prev, newMsg]);
-                  } else {
-                    setMessagesSafe(prev => prev.map(m => 
-                      m.id === currentUserMsgIdRef.current 
-                        ? { ...m, text: m.text + inputTranscription.text } 
-                        : m
-                    ));
-                  }
-                  if (inputTranscription.finished) {
-                    setMessagesSafe(prev => prev.map(m => 
-                      m.id === currentUserMsgIdRef.current 
-                        ? { ...m, isStreaming: false } 
-                        : m
-                    ));
-                    currentUserMsgIdRef.current = null;
-                  }
-                }
+                      // Handle Interruption
+                      if (message.serverContent?.interrupted) {
+                        stopAudioPlayback();
+                      }
 
-                // Handle Output Transcription (Model)
-                const outputTranscription = message.serverContent?.outputTranscription;
-                if (outputTranscription?.text) {
-                  if (!currentModelMsgIdRef.current) {
-                    currentModelMsgIdRef.current = (Date.now() + 1).toString();
-                    const newMsg: Message = {
-                      id: currentModelMsgIdRef.current,
-                      role: 'model',
-                      text: outputTranscription.text,
-                      timestamp: new Date(),
-                      isStreaming: true
-                    };
-                    setMessagesSafe(prev => [...prev, newMsg]);
-                  } else {
-                    setMessagesSafe(prev => prev.map(m => 
-                      m.id === currentModelMsgIdRef.current 
-                        ? { ...m, text: m.text + outputTranscription.text } 
-                        : m
-                    ));
+                      // Handle Input Transcription (User)
+                      const inputTranscription = message.serverContent?.inputTranscription;
+                      if (inputTranscription?.text) {
+                        if (!currentUserMsgIdRef.current) {
+                          currentUserMsgIdRef.current = Date.now().toString();
+                          const newMsg: Message = {
+                            id: currentUserMsgIdRef.current,
+                            role: 'user',
+                            text: inputTranscription.text,
+                            timestamp: new Date(),
+                            isStreaming: true
+                          };
+                          setMessagesSafe(prev => [...prev, newMsg]);
+                        } else {
+                          setMessagesSafe(prev => prev.map(m => 
+                            m.id === currentUserMsgIdRef.current 
+                              ? { ...m, text: m.text + inputTranscription.text } 
+                              : m
+                          ));
+                        }
+                        if (inputTranscription.finished) {
+                          setMessagesSafe(prev => prev.map(m => 
+                            m.id === currentUserMsgIdRef.current 
+                              ? { ...m, isStreaming: false } 
+                              : m
+                          ));
+                          currentUserMsgIdRef.current = null;
+                        }
+                      }
+
+                      // Handle Output Transcription (Model)
+                      const outputTranscription = message.serverContent?.outputTranscription;
+                      if (outputTranscription?.text) {
+                        if (!currentModelMsgIdRef.current) {
+                          currentModelMsgIdRef.current = (Date.now() + 1).toString();
+                          const newMsg: Message = {
+                            id: currentModelMsgIdRef.current,
+                            role: 'model',
+                            text: outputTranscription.text,
+                            timestamp: new Date(),
+                            isStreaming: true
+                          };
+                          setMessagesSafe(prev => [...prev, newMsg]);
+                        } else {
+                          setMessagesSafe(prev => prev.map(m => 
+                            m.id === currentModelMsgIdRef.current 
+                              ? { ...m, text: m.text + outputTranscription.text } 
+                              : m
+                          ));
+                        }
+                        if (outputTranscription.finished) {
+                          setMessagesSafe(prev => prev.map(m => 
+                            m.id === currentModelMsgIdRef.current 
+                              ? { ...m, isStreaming: false } 
+                              : m
+                          ));
+                          currentModelMsgIdRef.current = null;
+                        }
+                      }
+                  } catch (err) {
+                      console.error("Error processing incoming WebSocket message:", err);
                   }
-                  if (outputTranscription.finished) {
-                    setMessagesSafe(prev => prev.map(m => 
-                      m.id === currentModelMsgIdRef.current 
-                        ? { ...m, isStreaming: false } 
-                        : m
-                    ));
-                    currentModelMsgIdRef.current = null;
-                  }
-                }
-              },
-              onclose: () => {
-                disconnect();
-              },
-              onerror: (error) => {
-                console.error("Live API Error:", error);
-                disconnect();
-              }
-            }
+              };
+
+              openedWs.onclose = () => {
+                  disconnect();
+              };
+
+              openedWs.onerror = (error) => {
+                  console.error("WebSocket Proxy Error:", error);
+                  disconnect();
+              };
+          }).catch(err => {
+              console.error("Failed to connect to WebSocket Proxy:", err);
+              disconnect();
           });
-          
-          sessionRef.current = sessionPromise;
 
       } catch (error) {
           console.error("Failed to connect to Gemini Live:", error);
@@ -271,10 +281,10 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
 
   const sendTextMessage = useCallback((text: string) => {
       if (sessionRef.current && isConnectedRef.current) {
-          sessionRef.current.then((session: any) => {
-              session.sendRealtimeInput({
+          sessionRef.current.then((openedWs: WebSocket) => {
+              openedWs.send(JSON.stringify({
                   text: text
-              });
+              }));
           });
           const msg: Message = {
               id: Date.now().toString(),

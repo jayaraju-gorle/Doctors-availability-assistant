@@ -7,7 +7,8 @@ import { useLiveGemini } from './hooks/useLiveGemini';
 import { CallRecord, ChatSession, Message, LanguageCode } from './types';
 import { api } from './services/api';
 import { sendMessageToGemini } from './services/geminiService';
-import firebase from './firebaseConfig';
+import { auth } from './firebaseConfig';
+import { signInAnonymously } from 'firebase/auth';
 
 const App: React.FC = () => {
   const [isAdminView, setIsAdminView] = useState(false);
@@ -25,9 +26,8 @@ const App: React.FC = () => {
     textSessionId.current = "session_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
     
     // Attempt anonymous sign-in so users can write to Firestore if rules require auth
-    const auth = firebase.auth && firebase.auth();
     if (auth) {
-      auth.signInAnonymously().catch((error) => {
+      signInAnonymously(auth).catch((error) => {
         console.warn("Anonymous sign-in failed. Firestore writes may fail if rules require authentication.", error);
       });
     }

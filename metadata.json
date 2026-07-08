@@ -3,5 +3,8 @@
   "description": "A conversational voice booking assistant for doctor appointments using Gemini API.",
   "requestFramePermissions": [
     "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }

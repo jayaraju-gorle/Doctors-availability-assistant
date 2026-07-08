@@ -1,0 +1,15 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Match block for recordings collection
+    match /recordings/{recordingId} {
+      allow read, write: if true;
+    }
+
+    // Match block for text_sessions collection
+    match /text_sessions/{sessionId} {
+      allow read, write: if true;
+    }
+  }
+}

@@ -1,6 +1,18 @@
 import { CallRecord, ChatSession, Message } from '../types';
-import { db, storage } from '../firebaseConfig';
-import firebase from '../firebaseConfig'; 
+import { db, storage, auth } from '../firebaseConfig';
+import { 
+  collection, 
+  query, 
+  orderBy, 
+  limit, 
+  getDocs, 
+  addDoc, 
+  serverTimestamp, 
+  doc, 
+  setDoc, 
+  arrayUnion 
+} from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 enum OperationType {
   CREATE = 'create',
@@ -31,7 +43,6 @@ interface FirestoreErrorInfo {
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const auth = firebase.auth && firebase.auth();
   const currentUser = auth ? auth.currentUser : null;
   
   const errInfo: FirestoreErrorInfo = {
@@ -62,10 +73,9 @@ export const api = {
 
   async fetchRecordings(): Promise<CallRecord[]> {
     try {
-      const snapshot = await db.collection("recordings")
-        .orderBy("timestamp", "desc")
-        .limit(20)
-        .get();
+      const recordingsCol = collection(db, "recordings");
+      const q = query(recordingsCol, orderBy("timestamp", "desc"), limit(20));
+      const snapshot = await getDocs(q);
 
       return snapshot.docs.map(doc => {
         const data = doc.data();
@@ -93,15 +103,15 @@ export const api = {
   async uploadRecording(record: CallRecord): Promise<void> {
     try {
       // 1. Upload the audio file
-      const storageRef = storage.ref(`recordings/${record.id}.webm`);
-      await storageRef.put(record.blob);
-      const downloadURL = await storageRef.getDownloadURL();
+      const storageRef = ref(storage, `recordings/${record.id}.webm`);
+      await uploadBytes(storageRef, record.blob);
+      const downloadURL = await getDownloadURL(storageRef);
 
       // 2. Save metadata + Transcript to Firestore
-      await db.collection("recordings").add({
+      await addDoc(collection(db, "recordings"), {
         url: downloadURL,
         duration: record.duration,
-        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        timestamp: serverTimestamp(),
         callId: record.id,
         transcript: record.transcript || [] // Save the chat history of this call
       });
@@ -118,13 +128,13 @@ export const api = {
 
   async logChatMessage(sessionId: string, message: Message): Promise<void> {
     try {
-      const sessionRef = db.collection("text_sessions").doc(sessionId);
+      const sessionRef = doc(db, "text_sessions", sessionId);
       
       // Use set with merge to create if not exists, and arrayUnion to append message
-      await sessionRef.set({
-        timestamp: firebase.firestore.FieldValue.serverTimestamp(), // Update last active time
+      await setDoc(sessionRef, {
+        timestamp: serverTimestamp(), // Update last active time
         lastMessage: message.text.slice(0, 100),
-        messages: firebase.firestore.FieldValue.arrayUnion(message)
+        messages: arrayUnion(message)
       }, { merge: true });
 
     } catch (error: any) {
@@ -137,16 +147,19 @@ export const api = {
 
   async fetchChatSessions(): Promise<ChatSession[]> {
     try {
-      const snapshot = await db.collection("text_sessions")
-        .orderBy("timestamp", "desc")
-        .limit(20)
-        .get();
+      const sessionsCol = collection(db, "text_sessions");
+      const q = query(sessionsCol, orderBy("timestamp", "desc"), limit(20));
+      const snapshot = await getDocs(q);
 
       return snapshot.docs.map(doc => {
         const data = doc.data();
+        const timestamp = data.timestamp && typeof data.timestamp.toDate === 'function'
+          ? data.timestamp.toDate() 
+          : new Date(data.timestamp || Date.now());
+
         return {
           id: doc.id,
-          timestamp: data.timestamp?.toDate() || new Date(),
+          timestamp,
           messages: data.messages || [],
           lastMessage: data.lastMessage || ""
         } as ChatSession;

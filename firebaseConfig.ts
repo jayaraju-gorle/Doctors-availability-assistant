@@ -1,24 +1,15 @@
-import firebase from "firebase/compat/app";
-import "firebase/compat/firestore";
-import "firebase/compat/storage";
-import "firebase/compat/auth";
+import { initializeApp } from "firebase/app";
+import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
+import { getAuth } from "firebase/auth";
 
-// Your web app's Firebase configuration
-const firebaseConfig = {
-  apiKey: "AIzaSyDz93HHoVgGFTviWUuVhwahYpFW9pwFKqQ",
-  authDomain: "voice-bot---doctor-booking.firebaseapp.com",
-  projectId: "voice-bot---doctor-booking",
-  storageBucket: "voice-bot---doctor-booking.firebasestorage.app",
-  messagingSenderId: "968458253320",
-  appId: "1:968458253320:web:b1c99cf87fb94fc16e0dbd",
-  measurementId: "G-76PPJ3NP90"
-};
+import firebaseConfig from "./firebase-applet-config.json";
 
-// Initialize Firebase (Singleton pattern for Compat)
-if (!firebase.apps.length) {
-  firebase.initializeApp(firebaseConfig);
-}
+// Initialize Firebase (Singleton pattern)
+export const app = initializeApp(firebaseConfig);
 
-export const db = firebase.firestore();
-export const storage = firebase.storage();
-export default firebase;
+// Initialize Firestore with the named database ID
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+export const storage = getStorage(app);
+export const auth = getAuth(app);
