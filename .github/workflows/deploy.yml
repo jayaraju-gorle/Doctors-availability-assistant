@@ -44,14 +44,6 @@ jobs:
           docker build -t $IMAGE .
           docker push $IMAGE
 
-      - name: Remove stale source annotation
-        run: |
-          gcloud run services update ${{ env.SERVICE_NAME }} \
-            --remove-annotations=run.googleapis.com/sources \
-            --project ${{ env.PROJECT_ID }} \
-            --region ${{ env.REGION }} \
-            --quiet || true
-
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE_NAME }} \
