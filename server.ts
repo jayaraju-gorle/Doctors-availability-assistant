@@ -13,7 +13,7 @@ async function startServer() {
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
 
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || "3000", 10);
 
   // Lazy initialize GoogleGenAI with key from environment
   let ai: GoogleGenAI | null = null;
