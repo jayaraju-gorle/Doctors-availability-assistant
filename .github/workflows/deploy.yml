@@ -34,4 +34,5 @@ jobs:
             --project ${{ env.PROJECT_ID }} \
             --region ${{ env.REGION }} \
             --allow-unauthenticated \
-            --set-env-vars="GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
+            --set-env-vars="GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" \
+            --build-source-settings=all
