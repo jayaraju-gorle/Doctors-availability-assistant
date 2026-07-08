@@ -51,5 +51,6 @@ jobs:
             --project ${{ env.PROJECT_ID }} \
             --region ${{ env.REGION }} \
             --allow-unauthenticated \
+            --remove-annotations=run.googleapis.com/sources \
             --set-env-vars="GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
 
