@@ -308,6 +308,10 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
       setMessagesSafe(prev => [...prev, msg]);
   }, []);
 
+  const clearMessages = useCallback(() => {
+      setMessagesSafe([]);
+  }, []);
+
   return {
     status,
     messages,
@@ -315,6 +319,7 @@ export const useLiveGemini = ({ onRecordingReady, language }: UseLiveGeminiProps
     disconnect,
     volume,
     sendTextMessage,
-    addMessage
+    addMessage,
+    clearMessages
   };
 };

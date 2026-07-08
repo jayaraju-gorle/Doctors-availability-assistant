@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Message, LiveStatus, LanguageCode } from '../types';
-import { AudioLines, X, Send, MessageSquare, MapPin, ExternalLink, Star, Banknote, User, Clock, Mic, StopCircle, Loader2, Globe, Info } from 'lucide-react';
+import { AudioLines, X, Send, MessageSquare, MapPin, ExternalLink, Star, Banknote, User, Clock, Mic, StopCircle, Loader2, Globe, Info, RotateCcw } from 'lucide-react';
 
 interface ChatInterfaceProps {
   messages: Message[];
@@ -13,6 +13,7 @@ interface ChatInterfaceProps {
   isBotTyping?: boolean;
   selectedLanguage: LanguageCode;
   onLanguageChange: (lang: LanguageCode) => void;
+  onRestart?: () => void;
 }
 
 // Helper to format text with Markdown-like syntax and Card support
@@ -173,7 +174,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onSendText,
   isBotTyping = false,
   selectedLanguage,
-  onLanguageChange
+  onLanguageChange,
+  onRestart
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [inputText, setInputText] = useState("");
@@ -268,6 +270,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
+            {onRestart && messages.length > 0 && (
+              <button
+                onClick={onRestart}
+                className="p-1.5 rounded-full hover:bg-white/10 text-white/80 hover:text-white transition-all flex items-center justify-center"
+                title="Restart Conversation"
+              >
+                <RotateCcw size={18} />
+              </button>
+            )}
             {isConnected && (
             <div className="flex items-center gap-1">
                 {bars.map((_, i) => (

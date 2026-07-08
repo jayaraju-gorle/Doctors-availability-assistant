@@ -75,10 +75,18 @@ const App: React.FC = () => {
     }
   };
 
-  const { status, messages, connect, disconnect, volume, sendTextMessage, addMessage } = useLiveGemini({
+  const { status, messages, connect, disconnect, volume, sendTextMessage, addMessage, clearMessages } = useLiveGemini({
     onRecordingReady: handleRecordingReady,
     language: selectedLanguage
   });
+
+  const handleRestart = () => {
+    if (status === 'connected') {
+      disconnect();
+    }
+    clearMessages();
+    textSessionId.current = "session_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+  };
 
   const handleConnectWithContext = () => {
     const recentContext = messages.slice(-6).map(m => {
@@ -165,6 +173,7 @@ const App: React.FC = () => {
               isBotTyping={isBotTyping}
               selectedLanguage={selectedLanguage}
               onLanguageChange={setSelectedLanguage}
+              onRestart={handleRestart}
             />
           </div>
         )}
